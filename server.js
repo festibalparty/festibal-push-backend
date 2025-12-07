@@ -1,6 +1,9 @@
 const express = require('express');
-const fetch = require('node-fetch'); // v2
 const cors = require('cors');
+
+// v3 node-fetch, via dynamic import wrapper
+const fetch = (...args) =>
+  import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -43,7 +46,6 @@ app.post('/send-notification', async (req, res) => {
     const data = await response.json();
     console.log('Expo push response raw:', JSON.stringify(data, null, 2));
 
-    // Expo response structuur controleren
     if (!Array.isArray(data.data) || data.data.length === 0) {
       return res.status(500).json({
         ok: false,
@@ -57,7 +59,6 @@ app.post('/send-notification', async (req, res) => {
     if (ticket.status === 'ok') {
       return res.json({ ok: true, ticket });
     } else {
-      // Expo geeft zelf een message en eventueel details
       return res.status(400).json({
         ok: false,
         error: ticket.message || 'Expo push error',
