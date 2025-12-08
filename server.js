@@ -21,8 +21,10 @@ const pool = new Pool({
       : false,
 });
 
-// 👇 Zorg dat de tabel bestaat
-async function ensureTable() {
+// —————————————————————————
+//  DB setup: expo_tokens
+// —————————————————————————
+async function ensureTokenTable() {
   if (!process.env.DATABASE_URL) {
     console.warn('⚠️ DATABASE_URL is niet ingesteld, tokens worden niet opgeslagen.');
     return;
@@ -42,13 +44,139 @@ async function ensureTable() {
   console.log('✅ Tabel expo_tokens is klaar.');
 }
 
-ensureTable().catch((err) => {
+ensureTokenTable().catch((err) => {
   console.error('Fout bij aanmaken tabel expo_tokens:', err);
 });
 
+// —————————————————————————
+//  DB setup: news_items
+// —————————————————————————
+async function ensureNewsTable() {
+  if (!process.env.DATABASE_URL) {
+    console.warn('⚠️ DATABASE_URL is niet ingesteld, nieuws wordt niet opgeslagen.');
+    return;
+  }
+
+  const sql = `
+    CREATE TABLE IF NOT EXISTS news_items (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `;
+
+  await pool.query(sql);
+  console.log('✅ Tabel news_items is klaar.');
+}
+
+ensureNewsTable().catch((err) => {
+  console.error('Fout bij aanmaken tabel news_items:', err);
+});
+
+// —————————————————————————
+//  Health check
+// —————————————————————————
 app.get('/', (req, res) => {
   res.json({ ok: true, message: 'Festibal push backend werkt 🎉' });
 });
+
+// —————————————————————————
+//  Nieuws endpoints
+// —————————————————————————
+
+/**
+ * GET /news
+ * Haalt alle nieuwsberichten op, nieuwste eerst
+ */
+app.get('/news', async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(500).json({
+      ok: false,
+      error: 'DATABASE_URL ontbreekt, geen databaseverbinding voor nieuws.',
+    });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        id,
+        title,
+        message,
+        created_at AS "createdAt"
+      FROM news_items
+      ORDER BY created_at DESC;
+      `
+    );
+
+    return res.json(rows);
+  } catch (err) {
+    console.error('Fout bij ophalen nieuws:', err);
+    return res.status(500).json({
+      ok: false,
+      error: 'DB error bij ophalen nieuws',
+    });
+  }
+});
+
+/**
+ * POST /news
+ * body: { title: string, message: string }
+ */
+app.post('/news', async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(500).json({
+      ok: false,
+      error: 'DATABASE_URL ontbreekt, nieuws kan niet opgeslagen worden.',
+    });
+  }
+
+  const { title, message } = req.body;
+
+  if (!title || !message) {
+    return res.status(400).json({
+      ok: false,
+      error: 'title en message zijn verplicht',
+    });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `
+      INSERT INTO news_items (title, message)
+      VALUES ($1, $2)
+      RETURNING
+        id,
+        title,
+        message,
+        created_at AS "createdAt";
+      `,
+      [title, message]
+    );
+
+    const created = rows[0];
+
+    // 🔔 Optioneel: automatisch een broadcast versturen
+    // try {
+    //   await autoBroadcastNews(created);
+    // } catch (e) {
+    //   console.warn('Kon auto broadcast voor nieuws niet versturen:', e);
+    // }
+
+    return res.status(201).json(created);
+  } catch (err) {
+    console.error('Fout bij opslaan nieuws:', err);
+    return res.status(500).json({
+      ok: false,
+      error: 'DB error bij opslaan nieuws',
+    });
+  }
+});
+
+// —————————————————————————
+//  Token registratie & push
+// —————————————————————————
 
 /**
  * POST /register-token
@@ -65,7 +193,10 @@ app.post('/register-token', async (req, res) => {
 
   if (!process.env.DATABASE_URL) {
     console.warn('DATABASE_URL ontbreekt, token wordt niet in DB opgeslagen.');
-    return res.json({ ok: true, warning: 'Token niet persistent opgeslagen (geen DATABASE_URL).' });
+    return res.json({
+      ok: true,
+      warning: 'Token niet persistent opgeslagen (geen DATABASE_URL).',
+    });
   }
 
   try {
@@ -139,7 +270,7 @@ app.post('/broadcast', async (req, res) => {
 });
 
 /**
- * (optioneel) Oude single-token endpoint laten staan voor testen
+ * (optioneel) Single-token endpoint voor testen
  * POST /send-notification
  * body: { to, title, body }
  */
@@ -157,9 +288,9 @@ app.post('/send-notification', async (req, res) => {
   return sendToExpo(messages, res);
 });
 
-/**
- * Helper: stuurt messages-array naar Expo
- */
+// —————————————————————————
+//  Helper: sturen naar Expo
+// —————————————————————————
 async function sendToExpo(messages, res) {
   try {
     const response = await fetch('https://exp.host/--/api/v2/push/send', {
@@ -193,6 +324,35 @@ async function sendToExpo(messages, res) {
   }
 }
 
+// —————————————————————————
+//  (Optioneel) Auto broadcast bij nieuws
+// —————————————————————————
+// async function autoBroadcastNews(newsItem) {
+//   if (!process.env.DATABASE_URL) {
+//     throw new Error('Geen DATABASE_URL, kan geen auto broadcast doen.');
+//   }
+//
+//   const { title, message } = newsItem;
+//   const { rows } = await pool.query('SELECT token FROM expo_tokens;');
+//
+//   if (!rows || rows.length === 0) {
+//     console.log('Geen tokens voor auto broadcast, skip.');
+//     return;
+//   }
+//
+//   const messages = rows.map((row) => ({
+//     to: row.token,
+ //     title: title,
+ //     body: message,
+//   }));
+//
+//   // We negeren hier de HTTP response richting client, puur fire & forget
+//   await sendToExpo(messages, { json: () => {}, status: () => ({ json: () => {} }) });
+// }
+
+// —————————————————————————
+//  Start server
+// —————————————————————————
 app.listen(PORT, () => {
-  console.log(`Festibal push backend draait op http://localhost:${PORT}`);
+  console.log(`Festibal push backend draait op port ${PORT}`);
 });
