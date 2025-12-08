@@ -173,6 +173,59 @@ app.post('/news', async (req, res) => {
     });
   }
 });
+/**
+ * DELETE /news/:id
+ * Verwijdert één nieuwsbericht
+ */
+app.delete('/news/:id', async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(500).json({
+      ok: false,
+      error: 'DATABASE_URL ontbreekt, nieuws kan niet verwijderd worden.',
+    });
+  }
+
+  const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Ongeldig nieuws ID',
+    });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `
+      DELETE FROM news_items
+      WHERE id = $1
+      RETURNING
+        id,
+        title,
+        message,
+        created_at AS "createdAt";
+      `,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Nieuwsbericht niet gevonden',
+      });
+    }
+
+    return res.json({
+      ok: true,
+      deleted: rows[0],
+    });
+  } catch (err) {
+    console.error('Fout bij verwijderen nieuws:', err);
+    return res.status(500).json({
+      ok: false,
+      error: 'DB error bij verwijderen nieuws',
+    });
+  }
+});
 
 // —————————————————————————
 //  Token registratie & push
